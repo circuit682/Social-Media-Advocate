@@ -1,0 +1,145 @@
+const { Lead, OutreachLog, UserInteraction, Flag } = require("../db/models");
+const { classifyPost } = require("../domain/classification");
+const {
+  mustGoToHumanReview,
+  isAutoSendEligible,
+  isTouchHardStopped
+} = require("../domain/humanReviewPolicy");
+
+function buildTemplateMessage(lead) {
+  if (lead.tier === "yellow") {
+    return "Thanks for sharing. Are you looking for tutoring support to understand the topic better?";
+  }
+
+  return "Hi, we offer ethical tutoring and project guidance. If helpful, I can share how support works.";
+}
+
+async function scoreLead(postId) {
+  const lead = await Lead.findOne({ postId });
+  if (!lead) {
+    throw new Error("Lead not found");
+  }
+
+  const classification = classifyPost(lead.excerpt);
+  lead.intentScore = classification.intentScore;
+  lead.tier = classification.tier;
+  lead.riskFlag = classification.riskFlag;
+  if (classification.tier === "red") {
+    lead.status = "disallowed";
+  }
+  await lead.save();
+
+  return {
+    postId: lead.postId,
+    intentScore: lead.intentScore,
+    riskFlag: lead.riskFlag,
+    recommendedAction: classification.recommendedAction
+  };
+}
+
+async function sendOutreach({
+  postId,
+  templateBased = true,
+  includesPricing = false,
+  priceEstimateUsd = 0
+}, env) {
+  const lead = await Lead.findOne({ postId });
+  if (!lead) {
+    throw new Error("Lead not found");
+  }
+
+  const touchCount = await UserInteraction.countDocuments({
+    username: lead.username,
+    platform: lead.platform,
+    createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+  });
+
+  if (isTouchHardStopped({ touchCount, maxTouchesPerSevenDays: env.maxTouchesPerSevenDays })) {
+    await Flag.create({
+      leadId: lead._id,
+      flagType: "hard_stop_touch_limit",
+      details: `Touch count ${touchCount} reached hard stop threshold`,
+      severity: "high"
+    });
+
+    lead.status = "disallowed";
+    await lead.save();
+
+    return {
+      status: "blocked",
+      requiresHumanReview: true,
+      outreachLogId: null,
+      reviewReasons: ["hard_stop_touch_limit"]
+    };
+  }
+
+  const hasExternalLinks = Boolean(lead.metadata?.externalLinks?.length);
+  const hasAttachments = Boolean(lead.metadata?.hasAttachments);
+  const isBorderline = lead.tier === "yellow" && lead.intentScore >= 50;
+  const reviewDecision = mustGoToHumanReview({
+    classification: { tier: lead.tier },
+    priceEstimateUsd,
+    priceThresholdUsd: env.priceThresholdUsd,
+    touchCount,
+    hasAttachments,
+    hasExternalLinks,
+    geo: lead.geo,
+    highValueGeos: env.highValueGeos,
+    isBorderline
+  });
+
+  const firstContact = touchCount === 0;
+  const lowRisk = lead.tier === "green" && !lead.riskFlag;
+  const autoEligible = isAutoSendEligible({
+    firstContact,
+    lowRisk,
+    templateBased,
+    includesPricing
+  });
+
+  const queueRequired = reviewDecision.required || !autoEligible;
+  const mode = queueRequired ? "queue" : "auto";
+  const message = buildTemplateMessage(lead);
+
+  const outreachLog = await OutreachLog.create({
+    leadId: lead._id,
+    message,
+    mode,
+    queuedAt: queueRequired ? new Date() : null,
+    sentAt: queueRequired ? null : new Date(),
+    containsPricing: includesPricing,
+    priceEstimateUsd
+  });
+
+  await UserInteraction.create({
+    username: lead.username,
+    platform: lead.platform,
+    leadId: lead._id,
+    interactionType: lead.tier === "yellow" ? "comment" : "dm",
+    channel: mode
+  });
+
+  if (reviewDecision.required) {
+    await Flag.create({
+      leadId: lead._id,
+      flagType: "human_review_required",
+      details: reviewDecision.reasons.join(","),
+      severity: "medium"
+    });
+  }
+
+  lead.status = queueRequired ? "queued" : "contacted";
+  await lead.save();
+
+  return {
+    status: queueRequired ? "queued" : "sent",
+    requiresHumanReview: queueRequired,
+    outreachLogId: outreachLog._id.toString(),
+    reviewReasons: reviewDecision.reasons
+  };
+}
+
+module.exports = {
+  scoreLead,
+  sendOutreach
+};
