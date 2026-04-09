@@ -3,6 +3,9 @@ const { inferGeo } = require("../domain/geography");
 const { evaluateSafety } = require("../domain/safetyEngine");
 const { Lead, Flag } = require("../db/models");
 const { buildFingerprint } = require("../utils/fingerprint");
+const { createLogger } = require("../utils/logger");
+
+const logger = createLogger();
 
 async function ingestPosts({ platform, posts, maxExcerptLength }) {
   const ops = posts.map((post) => {
@@ -68,6 +71,11 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
   const result = await Lead.bulkWrite(ops, { ordered: false });
 
   const insertedCount = result?.upsertedCount || 0;
+  const duplicateCount = Math.max(posts.length - insertedCount, 0);
+
+  if (duplicateCount > 0) {
+    logger.info({ platform, duplicateCount }, "Duplicate posts skipped during ingestion");
+  }
 
   if (insertedCount > 0) {
     const disallowedLeads = await Lead.find({
@@ -77,6 +85,11 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
     }).select("_id riskFlag");
 
     if (disallowedLeads.length) {
+      logger.warn(
+        { platform, disallowedCount: disallowedLeads.length },
+        "Disallowed leads detected during ingestion"
+      );
+
       await Flag.insertMany(
         disallowedLeads.map((lead) => ({
           leadId: lead._id,

@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "worker": "node src/workers/outreachWorker.js",
+    "queue:smoke": "node src/scripts/queueSmokeTest.js",
     "test": "jest --runInBand"
   },
   "engines": {

@@ -30,6 +30,8 @@ A Node.js-first implementation for ethical lead discovery and outreach.
 - `POST /outreach/send`
 - `POST /privacy/delete`
 - `POST /maintenance/retention`
+- `GET /health`
+- `GET /health/ops`
 
 ## Internal Admin Model
 
@@ -59,7 +61,18 @@ copy .env.example .env
 npm run dev
 ```
 
+4. Run queue smoke test (requires Mongo + Redis):
+
+```bash
+npm run queue:smoke
+```
+
 ## Notes
 
 - This system intentionally blocks disallowed academic dishonesty requests.
 - A future Python microservice can be added for advanced scoring without changing the Node.js core APIs.
+- Structured logs are emitted for ingestion queue events, outreach routing decisions, disallowed safety blocks, and dedup skips.
+- Runtime operations status is exposed via `/health` and `/health/ops`, including:
+  - `lastSmokeTestAt`
+  - `lastSmokeTestJobs`
+  - `lastProcessedJobs` (ingestion/outreach/review)

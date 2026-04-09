@@ -15,6 +15,7 @@ const { enqueueOutreachJob, enqueueReviewJob } = require("./queues/outreachQueue
 const { getQueueHealth } = require("./queues/queueClient");
 const { decideOutreachJob } = require("./domain/decisionEngine");
 const { createLogger } = require("./utils/logger");
+const { readRuntimeStatus } = require("./utils/runtimeStatus");
 
 function createApp() {
   const app = express();
@@ -29,11 +30,18 @@ function createApp() {
   app.get("/health", async (_req, res) => {
     const db = mongoose.connection.readyState === 1 ? "up" : "down";
     const queue = await getQueueHealth(env);
+    const ops = readRuntimeStatus();
     res.json({
       status: db === "up" && queue.queue === "up" ? "ok" : "degraded",
       db,
-      queue: queue.queue
+      queue: queue.queue,
+      ops
     });
+  });
+
+  app.get("/health/ops", (_req, res) => {
+    const ops = readRuntimeStatus();
+    res.json({ status: "ok", ops });
   });
 
   app.post("/ingest/posts", validateIngestPayload, async (req, res, next) => {
@@ -44,6 +52,8 @@ function createApp() {
         posts,
         maxExcerptLength: env.maxPostExcerptLength
       });
+
+      req.log.info({ jobId: job.id, platform }, "Ingestion job queued");
 
       return res.json({ status: "queued", job_id: job.id, ingested_count: posts.length });
     } catch (error) {
@@ -66,6 +76,8 @@ function createApp() {
         posts,
         maxExcerptLength: env.maxPostExcerptLength
       });
+
+      req.log.info({ jobId: job.id, source }, "Fetched posts queued for ingestion");
 
       return res.json({
         status: "success",
@@ -132,6 +144,11 @@ function createApp() {
           reason: decision.reason
         });
 
+        req.log.warn(
+          { postId, jobId: reviewJob.id, reason: decision.reason },
+          "Outreach routed to review queue"
+        );
+
         return res.json({
           status: "queued",
           queue: "review",
@@ -142,6 +159,8 @@ function createApp() {
       }
 
       const outreachJob = await enqueueOutreachJob(env, plan.payload);
+
+      req.log.info({ postId, jobId: outreachJob.id }, "Outreach routed to outreach queue");
 
       return res.json({
         status: "queued",

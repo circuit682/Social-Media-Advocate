@@ -6,6 +6,9 @@ const {
   isAutoSendEligible,
   isTouchHardStopped
 } = require("../domain/humanReviewPolicy");
+const { createLogger } = require("../utils/logger");
+
+const logger = createLogger();
 
 function buildTemplateMessage(lead) {
   if (lead.tier === "yellow") {
@@ -52,6 +55,8 @@ async function planOutreach({ postId, templateBased = true, includesPricing = fa
   });
 
   if (isTouchHardStopped({ touchCount, maxTouchesPerSevenDays: env.maxTouchesPerSevenDays })) {
+    logger.warn({ postId, touchCount }, "Outreach blocked by hard touch limit");
+
     return {
       lead,
       blocked: true,
@@ -152,6 +157,8 @@ async function sendOutreach({
 
   const safety = evaluateSafety(lead.excerpt);
   if (safety.disallowed) {
+    logger.warn({ postId }, "Outreach blocked by safety engine");
+
     lead.status = "disallowed";
     await lead.save();
 
@@ -170,6 +177,8 @@ async function sendOutreach({
   });
 
   if (isTouchHardStopped({ touchCount, maxTouchesPerSevenDays: env.maxTouchesPerSevenDays })) {
+    logger.warn({ postId, touchCount }, "Outreach blocked during send by hard touch limit");
+
     await Flag.create({
       leadId: lead._id,
       flagType: "hard_stop_touch_limit",
