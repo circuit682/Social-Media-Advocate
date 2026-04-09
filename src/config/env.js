@@ -12,6 +12,10 @@ const env = {
   mongoUri: process.env.MONGO_URI,
   priceThresholdUsd: toNumber(process.env.PRICE_THRESHOLD_USD, 50),
   maxTouchesPerSevenDays: toNumber(process.env.MAX_TOUCHES_PER_7_DAYS, 3),
+  redisUrl: process.env.REDIS_URL || "",
+  redisHost: process.env.REDIS_HOST || "127.0.0.1",
+  redisPort: toNumber(process.env.REDIS_PORT, 6379),
+  retentionCron: process.env.RETENTION_CRON || "0 3 * * *",
   highValueGeos: (process.env.HIGH_VALUE_GEOS || "US,UK,CA")
     .split(",")
     .map((v) => v.trim().toUpperCase())

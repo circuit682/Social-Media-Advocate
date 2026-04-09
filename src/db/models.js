@@ -5,6 +5,7 @@ const leadSchema = new mongoose.Schema(
     username: { type: String, required: true, index: true },
     platform: { type: String, required: true },
     postId: { type: String, required: true },
+    fingerprint: { type: String, required: true, unique: true },
     excerpt: { type: String, required: true, maxlength: 200 },
     intentScore: { type: Number, required: true, index: true },
     tier: { type: String, enum: ["green", "yellow", "red"], required: true },

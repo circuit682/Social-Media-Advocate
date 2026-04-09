@@ -24,9 +24,13 @@ class RedditSource extends BaseSource {
     const children = data?.data?.children || [];
 
     return children.map((entry) => ({
+      post_id: entry.data.id,
+      author_id: entry.data.author,
+      handle: entry.data.author,
       id: entry.data.id,
       username: entry.data.author,
       text: `${entry.data.title || ""} ${entry.data.selftext || ""}`.trim(),
+      timestamp: new Date(entry.data.created_utc * 1000).toISOString(),
       created_at: new Date(entry.data.created_utc * 1000).toISOString(),
       platform: "reddit",
       externalLinks: (entry.data.url_overridden_by_dest && [entry.data.url_overridden_by_dest]) || [],

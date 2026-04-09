@@ -1,40 +1,51 @@
 const express = require("express");
-const pino = require("pino");
 const pinoHttp = require("pino-http");
+const mongoose = require("mongoose");
 
 const { env } = require("./config/env");
 const { createSourceRegistry } = require("./ingestion/sourceRegistry");
-const { ingestPosts } = require("./services/leadService");
-const { scoreLead, sendOutreach } = require("./services/outreachService");
+const { scoreLead, planOutreach } = require("./services/outreachService");
 const { applyRetention, deleteOnRequest } = require("./services/retentionService");
 const { requireInternalAdmin } = require("./api/adminAuth");
+const { validateIngestPayload } = require("./api/validators/postValidator");
+const { createTouchLimiter } = require("./middleware/touchLimiter");
+const { createRateLimiter } = require("./middleware/rateLimiter");
+const { enqueueIngestionJob } = require("./queues/ingestionQueue");
+const { enqueueOutreachJob, enqueueReviewJob } = require("./queues/outreachQueue");
+const { getQueueHealth } = require("./queues/queueClient");
+const { decideOutreachJob } = require("./domain/decisionEngine");
+const { createLogger } = require("./utils/logger");
 
 function createApp() {
   const app = express();
-  const logger = pino({ level: "info" });
+  const logger = createLogger();
   const sourceRegistry = createSourceRegistry(env);
+  const touchLimiter = createTouchLimiter(env);
 
   app.use(express.json({ limit: "1mb" }));
   app.use(pinoHttp({ logger }));
+  app.use(createRateLimiter());
 
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok" });
+  app.get("/health", async (_req, res) => {
+    const db = mongoose.connection.readyState === 1 ? "up" : "down";
+    const queue = await getQueueHealth(env);
+    res.json({
+      status: db === "up" && queue.queue === "up" ? "ok" : "degraded",
+      db,
+      queue: queue.queue
+    });
   });
 
-  app.post("/ingest/posts", async (req, res, next) => {
+  app.post("/ingest/posts", validateIngestPayload, async (req, res, next) => {
     try {
       const { platform, posts } = req.body;
-      if (!platform || !Array.isArray(posts)) {
-        return res.status(400).json({ error: "platform and posts are required" });
-      }
-
-      const result = await ingestPosts({
+      const job = await enqueueIngestionJob(env, {
         platform: platform.toLowerCase(),
         posts,
         maxExcerptLength: env.maxPostExcerptLength
       });
 
-      return res.json({ status: "success", ingested_count: result.ingestedCount });
+      return res.json({ status: "queued", job_id: job.id, ingested_count: posts.length });
     } catch (error) {
       return next(error);
     }
@@ -50,7 +61,7 @@ function createApp() {
       }
 
       const posts = await adapter.fetchRecentPosts(params);
-      const result = await ingestPosts({
+      const job = await enqueueIngestionJob(env, {
         platform: source.toLowerCase(),
         posts,
         maxExcerptLength: env.maxPostExcerptLength
@@ -60,7 +71,8 @@ function createApp() {
         status: "success",
         source,
         fetched_count: posts.length,
-        ingested_count: result.ingestedCount
+        queue_status: "queued",
+        job_id: job.id
       });
     } catch (error) {
       return next(error);
@@ -86,7 +98,7 @@ function createApp() {
     }
   });
 
-  app.post("/outreach/send", async (req, res, next) => {
+  app.post("/outreach/send", touchLimiter, async (req, res, next) => {
     try {
       const {
         post_id: postId,
@@ -99,7 +111,7 @@ function createApp() {
         return res.status(400).json({ error: "post_id is required" });
       }
 
-      const result = await sendOutreach(
+      const plan = await planOutreach(
         {
           postId,
           templateBased,
@@ -109,10 +121,34 @@ function createApp() {
         env
       );
 
+      const decision = decideOutreachJob({
+        lead: plan.lead,
+        requiresHumanReview: plan.requiresHumanReview
+      });
+
+      if (decision.jobType === "review") {
+        const reviewJob = await enqueueReviewJob(env, {
+          ...plan.payload,
+          reason: decision.reason
+        });
+
+        return res.json({
+          status: "queued",
+          queue: "review",
+          job_id: reviewJob.id,
+          requires_human_review: true,
+          review_reasons: plan.reviewReasons
+        });
+      }
+
+      const outreachJob = await enqueueOutreachJob(env, plan.payload);
+
       return res.json({
-        status: result.status,
-        requires_human_review: result.requiresHumanReview,
-        review_reasons: result.reviewReasons
+        status: "queued",
+        queue: "outreach",
+        job_id: outreachJob.id,
+        requires_human_review: false,
+        review_reasons: []
       });
     } catch (error) {
       return next(error);

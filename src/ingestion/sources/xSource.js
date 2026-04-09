@@ -33,11 +33,15 @@ class XSource extends BaseSource {
     const usersById = new Map(users.map((u) => [u.id, u]));
 
     const posts = (data.data || []).map((item) => ({
+      post_id: item.id,
       authorId: item.author_id,
+      author_id: item.author_id,
       id: item.id,
+      handle: usersById.get(item.author_id)?.username || item.author_id,
       username: usersById.get(item.author_id)?.username || item.author_id,
       handleSnapshot: usersById.get(item.author_id)?.username || item.author_id,
       text: item.text,
+      timestamp: item.created_at,
       created_at: item.created_at,
       profileGeo: usersById.get(item.author_id)?.location || "",
       language: item.lang || "",

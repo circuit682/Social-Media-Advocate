@@ -1,10 +1,26 @@
 const { classifyPost } = require("../domain/classification");
 const { inferGeo } = require("../domain/geography");
+const { evaluateSafety } = require("../domain/safetyEngine");
 const { Lead, Flag } = require("../db/models");
+const { buildFingerprint } = require("../utils/fingerprint");
 
 async function ingestPosts({ platform, posts, maxExcerptLength }) {
   const ops = posts.map((post) => {
-    const classification = classifyPost(post.text);
+    const postId = post.post_id || post.id;
+    const authorId = post.author_id || post.authorId || post.username;
+    const handle = post.handle || post.handleSnapshot || post.username || authorId;
+    const timestamp = post.timestamp || post.created_at;
+    const fingerprint = buildFingerprint(platform, postId, post.text);
+    const safety = evaluateSafety(post.text);
+    const baseClassification = classifyPost(post.text);
+    const classification = safety.disallowed
+      ? {
+          intentScore: 0,
+          tier: "red",
+          riskFlag: safety.flag,
+          recommendedAction: "no_sales_outreach"
+        }
+      : baseClassification;
     const excerpt = String(post.text || "").slice(0, maxExcerptLength);
     const geoInference = inferGeo({
       profileGeo: post.profileGeo,
@@ -15,12 +31,13 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
 
     return {
       updateOne: {
-        filter: { platform, postId: post.id },
+        filter: { fingerprint },
         update: {
           $setOnInsert: {
-            username: post.username,
+            username: handle,
             platform,
-            postId: post.id,
+            postId,
+            fingerprint,
             excerpt,
             intentScore: classification.intentScore,
             tier: classification.tier,
@@ -28,13 +45,14 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
             status: classification.tier === "red" ? "disallowed" : "new",
             geo: post.geo || geoInference.geo || "",
             metadata: {
-              createdAtSource: post.created_at,
+              createdAtSource: timestamp,
               externalLinks: post.externalLinks || [],
               hasAttachments: Boolean(post.hasAttachments),
-              authorId: post.authorId || "",
-              handleSnapshot: post.handleSnapshot || post.username,
+              authorId,
+              handleSnapshot: handle,
               geoSignals: geoInference.signals,
-              geoConfidence: geoInference.confidence
+              geoConfidence: geoInference.confidence,
+              pipelineTag: safety.pipelineTag
             }
           }
         },
@@ -54,7 +72,7 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
   if (insertedCount > 0) {
     const disallowedLeads = await Lead.find({
       platform,
-      postId: { $in: posts.map((p) => p.id) },
+      postId: { $in: posts.map((p) => p.post_id || p.id) },
       tier: "red"
     }).select("_id riskFlag");
 

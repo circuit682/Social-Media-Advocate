@@ -1,5 +1,6 @@
 const { Lead, OutreachLog, UserInteraction, Flag } = require("../db/models");
 const { classifyPost } = require("../domain/classification");
+const { evaluateSafety } = require("../domain/safetyEngine");
 const {
   mustGoToHumanReview,
   isAutoSendEligible,
@@ -37,6 +38,107 @@ async function scoreLead(postId) {
   };
 }
 
+async function planOutreach({ postId, templateBased = true, includesPricing = false, priceEstimateUsd = 0 }, env) {
+  const lead = await Lead.findOne({ postId });
+  if (!lead) {
+    throw new Error("Lead not found");
+  }
+
+  const safety = evaluateSafety(lead.excerpt);
+  const touchCount = await UserInteraction.countDocuments({
+    username: lead.username,
+    platform: lead.platform,
+    createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+  });
+
+  if (isTouchHardStopped({ touchCount, maxTouchesPerSevenDays: env.maxTouchesPerSevenDays })) {
+    return {
+      lead,
+      blocked: true,
+      requiresHumanReview: true,
+      reviewReasons: ["hard_stop_touch_limit"],
+      payload: {
+        postId,
+        templateBased,
+        includesPricing,
+        priceEstimateUsd
+      }
+    };
+  }
+
+  const hasExternalLinks = Boolean(lead.metadata?.externalLinks?.length);
+  const hasAttachments = Boolean(lead.metadata?.hasAttachments);
+  const isBorderline = lead.tier === "yellow" && lead.intentScore >= 50;
+  const reviewDecision = mustGoToHumanReview({
+    classification: { tier: lead.tier },
+    priceEstimateUsd,
+    priceThresholdUsd: env.priceThresholdUsd,
+    touchCount,
+    hasAttachments,
+    hasExternalLinks,
+    geo: lead.geo,
+    highValueGeos: env.highValueGeos,
+    isBorderline
+  });
+
+  const firstContact = touchCount === 0;
+  const lowRisk = lead.tier === "green" && !lead.riskFlag && !safety.disallowed;
+  const autoEligible = isAutoSendEligible({
+    firstContact,
+    lowRisk,
+    templateBased,
+    includesPricing
+  });
+
+  return {
+    lead,
+    blocked: safety.disallowed,
+    requiresHumanReview: safety.disallowed || reviewDecision.required || !autoEligible,
+    reviewReasons: safety.disallowed
+      ? ["disallowed_or_monitor_only"]
+      : reviewDecision.reasons,
+    payload: {
+      postId,
+      templateBased,
+      includesPricing,
+      priceEstimateUsd
+    }
+  };
+}
+
+async function queueForHumanReview({ postId, includesPricing = false, priceEstimateUsd = 0, reason = "requires_human_review" }) {
+  const lead = await Lead.findOne({ postId });
+  if (!lead) {
+    throw new Error("Lead not found");
+  }
+
+  const message = buildTemplateMessage(lead);
+  const outreachLog = await OutreachLog.create({
+    leadId: lead._id,
+    message,
+    mode: "queue",
+    sentAt: null,
+    queuedAt: new Date(),
+    containsPricing: includesPricing,
+    priceEstimateUsd
+  });
+
+  await Flag.create({
+    leadId: lead._id,
+    flagType: "human_review_required",
+    details: reason,
+    severity: "medium"
+  });
+
+  lead.status = "queued";
+  await lead.save();
+
+  return {
+    status: "queued",
+    outreachLogId: outreachLog._id.toString()
+  };
+}
+
 async function sendOutreach({
   postId,
   templateBased = true,
@@ -46,6 +148,19 @@ async function sendOutreach({
   const lead = await Lead.findOne({ postId });
   if (!lead) {
     throw new Error("Lead not found");
+  }
+
+  const safety = evaluateSafety(lead.excerpt);
+  if (safety.disallowed) {
+    lead.status = "disallowed";
+    await lead.save();
+
+    return {
+      status: "blocked",
+      requiresHumanReview: true,
+      outreachLogId: null,
+      reviewReasons: ["disallowed_or_monitor_only"]
+    };
   }
 
   const touchCount = await UserInteraction.countDocuments({
@@ -141,5 +256,7 @@ async function sendOutreach({
 
 module.exports = {
   scoreLead,
+  planOutreach,
+  queueForHumanReview,
   sendOutreach
 };
