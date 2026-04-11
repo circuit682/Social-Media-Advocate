@@ -47,8 +47,10 @@ function createApp() {
   app.get("/test-ingest", async (_req, res, next) => {
     try {
       const { ingestLead } = require("./services/leadService");
+      const testPostId = `test-ingest-${Date.now()}`;
 
       const mockPost = {
+        post_id: testPostId,
         author_id: "123",
         handle: "@student123",
         text: "I need urgent help with my assignment",

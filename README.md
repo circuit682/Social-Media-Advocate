@@ -61,6 +61,8 @@ copy .env.example .env
 npm run dev
 ```
 
+The app listens on port `5000` by default.
+
 4. Run queue smoke test (requires Mongo + Redis):
 
 ```bash

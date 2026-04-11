@@ -84,6 +84,7 @@ describe("pipeline integration", () => {
     expect(response.body.ingestedCount).toBe(1);
     expect(mockIngestLead).toHaveBeenCalledWith(
       expect.objectContaining({
+        post_id: expect.stringMatching(/^test-ingest-/),
         author_id: "123",
         handle: "@student123",
         text: "I need urgent help with my assignment",

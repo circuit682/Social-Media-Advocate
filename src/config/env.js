@@ -1,6 +1,7 @@
 const dotenv = require("dotenv");
+const path = require("path");
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 const toNumber = (value, fallback) => {
   const parsed = Number(value);
@@ -8,7 +9,7 @@ const toNumber = (value, fallback) => {
 };
 
 const env = {
-  port: toNumber(process.env.PORT, 3000),
+  port: toNumber(process.env.PORT, 5000),
   mongoUri: process.env.MONGO_URI,
   priceThresholdUsd: toNumber(process.env.PRICE_THRESHOLD_USD, 50),
   maxTouchesPerSevenDays: toNumber(process.env.MAX_TOUCHES_PER_7_DAYS, 3),
