@@ -7,6 +7,7 @@ const mockEnqueueOutreachJob = jest.fn();
 const mockEnqueueReviewJob = jest.fn();
 const mockScoreLead = jest.fn();
 const mockPlanOutreach = jest.fn();
+const mockIngestLead = jest.fn();
 
 jest.mock("../../src/queues/ingestionQueue", () => ({
   enqueueIngestionJob: (...args) => mockEnqueueIngestionJob(...args)
@@ -24,6 +25,10 @@ jest.mock("../../src/queues/queueClient", () => ({
 jest.mock("../../src/services/outreachService", () => ({
   scoreLead: (...args) => mockScoreLead(...args),
   planOutreach: (...args) => mockPlanOutreach(...args)
+}));
+
+jest.mock("../../src/services/leadService", () => ({
+  ingestLead: (...args) => mockIngestLead(...args)
 }));
 
 jest.mock("../../src/middleware/touchLimiter", () => ({
@@ -69,6 +74,23 @@ describe("pipeline integration", () => {
       riskFlag: null,
       recommendedAction: "dm"
     });
+    mockIngestLead.mockResolvedValue({ ingestedCount: 1 });
+  });
+
+  test("runs test ingestion endpoint", async () => {
+    const response = await request(app).get("/test-ingest");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ingestedCount).toBe(1);
+    expect(mockIngestLead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        author_id: "123",
+        handle: "@student123",
+        text: "I need urgent help with my assignment",
+        platform: "x",
+        timestamp: expect.any(Date)
+      })
+    );
   });
 
   test("rejects invalid ingestion payload", async () => {

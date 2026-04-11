@@ -44,6 +44,26 @@ function createApp() {
     res.json({ status: "ok", ops });
   });
 
+  app.get("/test-ingest", async (_req, res, next) => {
+    try {
+      const { ingestLead } = require("./services/leadService");
+
+      const mockPost = {
+        author_id: "123",
+        handle: "@student123",
+        text: "I need urgent help with my assignment",
+        platform: "x",
+        timestamp: new Date()
+      };
+
+      const result = await ingestLead(mockPost);
+
+      return res.json(result);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.post("/ingest/posts", validateIngestPayload, async (req, res, next) => {
     try {
       const { platform, posts } = req.body;

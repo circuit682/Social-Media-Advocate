@@ -106,6 +106,15 @@ async function ingestPosts({ platform, posts, maxExcerptLength }) {
   };
 }
 
+async function ingestLead(post, maxExcerptLength = 200) {
+  return ingestPosts({
+    platform: String(post.platform || "x").toLowerCase(),
+    posts: [post],
+    maxExcerptLength
+  });
+}
+
 module.exports = {
+  ingestLead,
   ingestPosts
 };
