@@ -69,6 +69,8 @@ The app listens on port `5000` by default.
 npm run queue:smoke
 ```
 
+To test the X bearer token against a custom endpoint, set `X_TEST_ENDPOINT` in `.env` and run `npm run x:test`.
+
 ## Notes
 
 - This system intentionally blocks disallowed academic dishonesty requests.

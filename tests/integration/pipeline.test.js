@@ -57,6 +57,7 @@ jest.mock("../../src/ingestion/sourceRegistry", () => ({
 
 describe("pipeline integration", () => {
   let app;
+  const debugKey = "internal-dev-key";
 
   beforeAll(() => {
     const { createApp } = require("../../src/app");
@@ -82,16 +83,34 @@ describe("pipeline integration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ingestedCount).toBe(1);
+    expect(response.body.score).toBe(85);
+    expect(response.body.risk).toBe("HIGH_INTENT");
+    expect(response.body.action).toBe("OUTREACH");
+    expect(response.body.stored).toBe(true);
     expect(mockIngestLead).toHaveBeenCalledWith(
       expect.objectContaining({
         post_id: expect.stringMatching(/^test-ingest-/),
         author_id: "123",
         handle: "@student123",
-        text: "I need urgent help with my assignment",
+        text: "I need help with my assignment urgently",
         platform: "x",
         timestamp: expect.any(Date)
       })
     );
+  });
+
+  test("blocks debug page without internal key", async () => {
+    const response = await request(app).get("/debug");
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body.error).toBe("internal access denied");
+  });
+
+  test("allows debug page with internal key", async () => {
+    const response = await request(app).get("/debug").set("x-internal-key", debugKey);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.text).toContain("Debug Tools");
   });
 
   test("rejects invalid ingestion payload", async () => {

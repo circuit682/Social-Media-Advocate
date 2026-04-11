@@ -14,6 +14,9 @@ const { enqueueIngestionJob } = require("./queues/ingestionQueue");
 const { enqueueOutreachJob, enqueueReviewJob } = require("./queues/outreachQueue");
 const { getQueueHealth } = require("./queues/queueClient");
 const { decideOutreachJob } = require("./domain/decisionEngine");
+const { classifyPost } = require("./domain/classification");
+const { evaluateSafety } = require("./domain/safetyEngine");
+const { Lead } = require("./db/models");
 const { createLogger } = require("./utils/logger");
 const { readRuntimeStatus } = require("./utils/runtimeStatus");
 
@@ -22,6 +25,15 @@ function createApp() {
   const logger = createLogger();
   const sourceRegistry = createSourceRegistry(env);
   const touchLimiter = createTouchLimiter(env);
+
+  const requireDebugKey = (req, res, next) => {
+    const internalKey = req.header("x-internal-key");
+    if (!env.internalApiKey || internalKey !== env.internalApiKey) {
+      return res.status(403).json({ error: "internal access denied" });
+    }
+
+    return next();
+  };
 
   app.use(express.json({ limit: "1mb" }));
   app.use(pinoHttp({ logger }));
@@ -44,6 +56,66 @@ function createApp() {
     res.json({ status: "ok", ops });
   });
 
+  app.get("/debug", requireDebugKey, (_req, res) => {
+    res.type("html").send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Social Media Advocate Debug</title>
+    <style>
+      body { font-family: Segoe UI, sans-serif; margin: 2rem; line-height: 1.4; }
+      h1 { margin-bottom: 0.5rem; }
+      a { display: inline-block; margin-right: 1rem; margin-bottom: 1rem; }
+      pre { background: #f5f7fa; padding: 1rem; border-radius: 8px; overflow: auto; }
+      button { padding: 0.5rem 0.8rem; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>Debug Tools</h1>
+    <p>Use the quick actions below to test ingestion and verify Mongo writes.</p>
+    <a href="/test-ingest" target="_blank" rel="noreferrer">Run /test-ingest</a>
+    <a href="/debug/db-count" target="_blank" rel="noreferrer">Open /debug/db-count</a>
+    <div>
+      <button id="run">Run Both</button>
+    </div>
+    <h2>Latest Results</h2>
+    <pre id="output">Click "Run Both" to fetch live data.</pre>
+    <script>
+      const output = document.getElementById("output");
+      document.getElementById("run").addEventListener("click", async () => {
+        try {
+          const ingest = await fetch("/test-ingest").then((r) => r.json());
+          const db = await fetch("/debug/db-count").then((r) => r.json());
+          output.textContent = JSON.stringify({ ingest, db }, null, 2);
+        } catch (error) {
+          output.textContent = error.message;
+        }
+      });
+    </script>
+  </body>
+</html>`);
+  });
+
+  app.get("/debug/db-count", requireDebugKey, async (_req, res, next) => {
+    try {
+      const count = await Lead.countDocuments();
+      const latest = await Lead.find({})
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .select("postId platform createdAt username");
+
+      return res.json({
+        status: "ok",
+        collection: "leads",
+        count,
+        latest
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.get("/test-ingest", async (_req, res, next) => {
     try {
       const { ingestLead } = require("./services/leadService");
@@ -53,14 +125,36 @@ function createApp() {
         post_id: testPostId,
         author_id: "123",
         handle: "@student123",
-        text: "I need urgent help with my assignment",
+        text: "I need help with my assignment urgently",
         platform: "x",
         timestamp: new Date()
       };
 
+      const safety = evaluateSafety(mockPost.text);
+      const classification = classifyPost(mockPost.text);
+      let risk = "LOW_INTENT";
+      let action = "MONITOR";
+
+      if (safety.disallowed || classification.tier === "red") {
+        risk = "DISALLOWED";
+        action = "BLOCK";
+      } else if (classification.intentScore >= 80) {
+        risk = "HIGH_INTENT";
+        action = "OUTREACH";
+      } else if (classification.intentScore >= 50) {
+        risk = "MEDIUM_INTENT";
+        action = "REVIEW";
+      }
+
       const result = await ingestLead(mockPost);
 
-      return res.json(result);
+      return res.json({
+        ingestedCount: result.ingestedCount,
+        score: classification.intentScore,
+        risk,
+        action,
+        stored: result.ingestedCount > 0
+      });
     } catch (error) {
       return next(error);
     }
